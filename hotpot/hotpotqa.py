@@ -186,8 +186,6 @@ class HotPotQATask(Task):
                 failed_trajectories += f"{question}\n{traj}\nThis trajectory is incorrect as {ref['reflection']}\nThus the correctness score is 1\n"
             
             inp = x + y + "\nThis trajectory is "
-            print("inp: ", inp)
-            print("failed_trajectories: ", failed_trajectories)
             
             prompt = value_prompt_reasoning_feedback.format(s="", trajectories=failed_trajectories, input=inp)
             
