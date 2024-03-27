@@ -96,6 +96,9 @@ class HotPotQATask(Task):
         #z = []
         if reflection_mapping_list:
             for reflection_mapping in reflection_mapping_list:
+                # print("reflection_mapping---------------------------------------------------")
+                # print(reflection_mapping)
+                # print("---------------------------------------------------------------------")
                 traj_with_reflection = reflection_mapping['trajectory'] + "FAILED TRAJECTORY\nReflection: " + reflection_mapping['reflection'] + "\n\n"
                 trajectories += traj_with_reflection
             
@@ -183,6 +186,8 @@ class HotPotQATask(Task):
                 failed_trajectories += f"{question}\n{traj}\nThis trajectory is incorrect as {ref['reflection']}\nThus the correctness score is 1\n"
             
             inp = x + y + "\nThis trajectory is "
+            print("inp: ", inp)
+            print("failed_trajectories: ", failed_trajectories)
             
             prompt = value_prompt_reasoning_feedback.format(s="", trajectories=failed_trajectories, input=inp)
             

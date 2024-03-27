@@ -13,6 +13,7 @@ env = wrappers.LoggingWrapper(env)
 
 global reflection_map
 global failed_trajectories
+global terminate_node_count
 reflection_map = []
 failed_trajectories = []
 
@@ -160,6 +161,7 @@ def lats_search(args, task, idx, iterations=30, to_print=True):
     global gpt
     global failed_trajectories
     global reflection_map
+    tn_count = 0
     gpt = partial(gpt, model=args.backend, temperature=args.temperature)
     x = env.reset(idx=idx)
     if to_print:
@@ -185,24 +187,25 @@ def lats_search(args, task, idx, iterations=30, to_print=True):
 
         if node.is_terminal and node.reward == 1:
             logging.info(f"Terminal node with reward 1 found at iteration {i + 1}")
-            return node.state, node.value, all_nodes, node.reward, node.em
+            return node.state, node.value, all_nodes, node.reward, node.em, tn_count
         
-        expand_node(node, args, task)
+        tn_count += expand_node(node, args, task)
 
         while node.is_terminal or not node.children:
             logging.info(f"Depth limit node found at iteration {i + 1}, reselecting...")
             node = select_node(root)
-            expand_node(node, args, task)
+            tn_count += expand_node(node, args, task)
 
         value = evaluate_node(node, args, task)
         # Find the child with the highest value
-        reward, terminal_node = rollout(max(node.children, key=lambda child: child.value), args, task, idx, max_depth=4)
+        reward, terminal_node, count_tmp = rollout(max(node.children, key=lambda child: child.value), args, task, idx, max_depth=4)
+        tn_count += count_tmp
 
         terminal_nodes.append(terminal_node)
 
         if terminal_node.reward == 1:
             logging.info("SUCCESSFUL TRAJECTORY FOUND DURING SIMULATION")
-            return terminal_node.state, terminal_node.value, [], terminal_node.reward, terminal_node.em
+            return terminal_node.state, terminal_node.value, [], terminal_node.reward, terminal_node.em, tn_count
 
         backpropagate(terminal_node, reward)
         all_nodes = [(node, node.value) for node in collect_all_nodes(root)]
@@ -212,7 +215,7 @@ def lats_search(args, task, idx, iterations=30, to_print=True):
         if terminal_nodes_with_reward_1:
             logging.info(f"Terminal node with reward 1 found at iteration {i + 1}")
             best_node = max(terminal_nodes_with_reward_1, key=lambda x: x.value)
-            return best_node.state, best_node.value, all_nodes, best_node.reward, best_node.em
+            return best_node.state, best_node.value, all_nodes, best_node.reward, best_node.em, tn_count
     
         for j, (node, value) in enumerate(all_nodes):
             logging.info(f"Node {j+1}: {str(node)}")
@@ -229,7 +232,7 @@ def lats_search(args, task, idx, iterations=30, to_print=True):
         logging.info("Unsuccessful trajectory found")
     if best_child is None:
         best_child = root
-    return best_child.state, best_child.value, all_nodes, best_child.reward, best_child.em
+    return best_child.state, best_child.value, all_nodes, best_child.reward, best_child.em, tn_count
 
 def select_node(node):
     while node and node.children:
@@ -264,26 +267,30 @@ def expand_node(node, args, task):
         logging.info("Depth limit reached")
         print("Depth limit reached")
         node.is_terminal = True
-        return
-    new_nodes = generate_new_states(node, args, task, args.n_generate_sample)
+        return 0
+    new_nodes, count = generate_new_states(node, args, task, args.n_generate_sample)
     node.children.extend(new_nodes)
+
+    return count
 
 def rollout(node, args, task, idx, max_depth=4):
     logging.info("ROLLING OUT")
     depth = node.depth
     n = 5
     rewards = [0]
+    sum_ = 0
     while not node.is_terminal and depth < max_depth:
         # Generate new states
         logging.info(f"ROLLING OUT {depth}")
         new_states = []
         values = []
         while len(new_states) == 0:
-            new_states = generate_new_states(node, args, task, n)
+            new_states, count = generate_new_states(node, args, task, n)
+            sum_ += count
 
         for state in new_states:
             if state.is_terminal:
-                return state.reward, state
+                return state.reward, state, sum_
                 
         child_prompts = [generate_prompt(child) for child in new_states if not child.is_terminal and child is not None]
         #new_state = new_state[0]
@@ -297,7 +304,7 @@ def rollout(node, args, task, idx, max_depth=4):
             rewards = [-1]
     
     logging.info("ROLLOUT FINISHED")
-    return sum(rewards) / len(rewards), node
+    return sum(rewards) / len(rewards), node, sum_
 
 def generate_new_states(node, args, task, n):
     global failed_trajectories
@@ -305,7 +312,9 @@ def generate_new_states(node, args, task, n):
     sampled_actions = get_samples(task, prompt, f"Thought {node.depth + 1}: ", n, prompt_sample=args.prompt_sample, stop="Observation")
     logging.info(f"SAMPLED ACTION: {sampled_actions}")
     tried_actions = []
-    
+
+    count = 0
+
     unique_states = {}  # Store unique states here
     for action in sampled_actions:
         new_state = node.state.copy()  # Make a copy of the parent node's state
@@ -332,6 +341,13 @@ def generate_new_states(node, args, task, n):
             new_state['action'] = action_line
             new_state['observation'] = obs
 
+            if (action_line.lower().startswith("search[") and action_line.endswith("]")):
+                count += 1
+                # print(action_line, "Terminate")
+            elif (action_line.lower().startswith("finish[") and action_line.endswith("]")):
+                count += 1
+                # print(action_line, "Terminate")
+
             new_node = Node(state=new_state, question=node.question, parent=node)
             new_node.is_terminal = r == 1 or done
             new_node.reward = r
@@ -348,7 +364,7 @@ def generate_new_states(node, args, task, n):
                 #if f"{action_type.lower()}[{action_param}]" not in failed_trajectories.values():
                 failed_trajectories.append({'trajectory': trajectory, 'final_answer': f"{action_type.lower()}[{action_param}]"})
 
-    return list(unique_states.values())  # Return unique nodes as a list
+    return list(unique_states.values()), count  # Return unique nodes as a list
 
 
 def evaluate_node(node, args, task):

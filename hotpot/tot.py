@@ -1,8 +1,8 @@
 import itertools
 import numpy as np
 from functools import partial
-from tot.models import gpt
-from tot.tasks import wikienv, wrappers
+from models import gpt
+import wikienv, wrappers
 import requests
 import logging
 
@@ -58,14 +58,15 @@ def get_values(task, x, ys, n_evaluate_sample, cache_value=True):
         values.append(value)
     return values
 
+
 def get_samples(task, x, y, n_generate_sample, prompt_sample, stop):
     unique_trajectories = get_unique_trajectories(failed_trajectories)
     global reflection_map
     reflection_map = []
     if prompt_sample == 'standard':
-        prompt, reflection_map = task.standard_prompt_wrap(x, y)
+        prompt = task.standard_prompt_wrap(x, y)
     elif prompt_sample == 'cot':
-        prompt, reflection_map = task.cot_prompt_wrap(x, y, unique_trajectories)
+        prompt = task.cot_prompt_wrap(x, y, reflection_map)
     else:
         raise ValueError(f'prompt_sample {prompt_sample} not recognized')
     logging.info(f"PROMPT: {prompt}")
@@ -168,6 +169,7 @@ def collect_trajectory(node):
 def dfs_search(args, task, idx, depth_limit=7, to_print=True):
     global gpt
     global failed_trajectories
+    tn_count = 0
     gpt = partial(gpt, model=args.backend, temperature=args.temperature)
     x = env.reset(idx=idx)
     if to_print:
@@ -176,20 +178,21 @@ def dfs_search(args, task, idx, depth_limit=7, to_print=True):
     all_nodes = []
     failed_trajectories = []
     it = 0
+    iterations = 100
     stack = [root]
-    while stack and it < 1:
+    while stack and it < iterations:
         node = stack.pop()
         logging.info(f"DFS at node depth {node.depth}...")
         
         if node.is_terminal and node.reward == 1:
             logging.info(f"Terminal node with reward 1 found at depth {node.depth}")
-            return node.state, node.value, all_nodes, node.reward, node.em
+            return node.state, node.value, all_nodes, node.reward, node.em, tn_count
 
         if node.depth >= depth_limit:
             logging.info("Depth limit reached")
             continue  # go to next iteration
 
-        expand_node(node, args, task)
+        tn_count += expand_node(node, args, task)
         stack.extend(reversed(node.children))  # adding all child nodes to stack for DFS
 
         all_nodes = [(node, node.value) for node in collect_all_nodes(root)]
@@ -197,7 +200,7 @@ def dfs_search(args, task, idx, depth_limit=7, to_print=True):
         it += 1
     # If we reach here, no solution was found
     logging.info("All paths explored. No solution found.")
-    return root, 0, all_nodes, 0, 0
+    return root, 0, all_nodes, 0, 0, tn_count
 
 
 def select_node_dfs(stack):
@@ -290,20 +293,31 @@ def select_node(node):
     return node  # This will return None if all paths from the root are exhausted
 
 def expand_node(node, args, task):
+    count = 0
     if node.depth >= 7:
         logging.info("Depth limit reached")
         print("Depth limit reached")
         node.is_terminal = True
         return
-    new_nodes = generate_new_states(node, args, task)
+    new_nodes, count = generate_new_states(node, args, task)
     node.children.extend(new_nodes)
+
+    return count
 
 def generate_new_states(node, args, task):
     prompt = generate_prompt(node)
+    # print('------------------------------------')
+    # print("generate_prompt: ", prompt)
     sampled_actions = get_samples(task, prompt, f"Thought {node.depth + 1}: ", args.n_generate_sample, prompt_sample=args.prompt_sample, stop="Observation")
+    # print('------------------------------------')
+    # print("sampled_actions: ", sampled_actions)
+    
+    
     logging.info(f"SAMPLED ACTION: {sampled_actions}")
     
     unique_states = {}  # Store unique states here
+
+    count = 0
     for action in sampled_actions:
         new_state = node.state.copy()  # Make a copy of the parent node's state
 
@@ -313,10 +327,12 @@ def generate_new_states(node, args, task):
 
         # Use thought and action to form a unique key
         unique_key = f"{thought_line}::{action_line}"
+
+        # print(unique_key)
         
         if unique_key in unique_states:
             continue  # Skip if this state already exists
-        
+
         if action_line:
             action_type = action_line.split('[')[0] if '[' in action_line else action_line
             action_param = action_line.split('[')[1].split(']')[0] if '[' in action_line else ""
@@ -326,6 +342,15 @@ def generate_new_states(node, args, task):
             new_state['thought'] = thought_line
             new_state['action'] = action_line
             new_state['observation'] = obs
+
+            
+            if (action_line.lower().startswith("search[") and action_line.endswith("]")):
+                count += 1
+                # print(action_line, "Terminate")
+            elif (action_line.lower().startswith("finish[") and action_line.endswith("]")):
+                count += 1
+                # print(action_line, "Terminate")
+
 
             new_node = Node(state=new_state, question=node.question, parent=node)
             new_node.is_terminal = r == 1 or done
@@ -339,8 +364,7 @@ def generate_new_states(node, args, task):
             if new_node.is_terminal and r == 0:
                 trajectory = collect_trajectory(new_node)
                 failed_trajectories.append({'trajectory': trajectory, 'final_answer': f"{action_type.lower()}[{action_param}]"})
-
-    return list(unique_states.values())  # Return unique nodes as a list
+    return list(unique_states.values()), count # Return unique nodes as a list
 
 
 def evaluate_node(node, args, task):
