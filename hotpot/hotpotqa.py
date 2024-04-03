@@ -103,14 +103,16 @@ class HotPotQATask(Task):
                 trajectories += traj_with_reflection
             
             prompt = cot_prompt_feedback.format(trajectories=trajectories, input=input)
-            if get_token_length(prompt) > max_token_length:
-                print("Too long")
+            cnt = 3
+            while get_token_length(prompt) > max_token_length:
+                print("Too long", f"cnt ={cnt}")
                 trajectories = ""
-                for reflection_mapping in reflection_mapping_list[:3]:
+                for reflection_mapping in reflection_mapping_list[:cnt]:
                     traj_with_reflection = reflection_mapping['trajectory'] + "FAILED TRAJECTORY\nReflection: " + reflection_mapping['reflection'] + "\n\n"
                     trajectories += traj_with_reflection
                 prompt = cot_prompt_feedback_short.format(trajectories=trajectories, input=input)
-            
+                cnt -= 1
+            print("Can fit in now")
             return prompt
         else:
             prompt = cot_prompt.format(input=input)
@@ -235,4 +237,3 @@ class HotPotQATask(Task):
             return 0.1
         else:
             return -1
-            
