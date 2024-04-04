@@ -104,7 +104,7 @@ class HotPotQATask(Task):
             
             prompt = cot_prompt_feedback.format(trajectories=trajectories, input=input)
             cnt = 3
-            while get_token_length(prompt) > max_token_length:
+            while get_token_length(prompt) + 100> max_token_length:
                 print("Too long", f"cnt ={cnt}")
                 trajectories = ""
                 for reflection_mapping in reflection_mapping_list[:cnt]:
@@ -112,7 +112,7 @@ class HotPotQATask(Task):
                     trajectories += traj_with_reflection
                 prompt = cot_prompt_feedback_short.format(trajectories=trajectories, input=input)
                 cnt -= 1
-            print("Can fit in now")
+            # print("Can fit in now")
             return prompt
         else:
             prompt = cot_prompt.format(input=input)
