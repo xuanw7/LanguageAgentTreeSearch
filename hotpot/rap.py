@@ -11,8 +11,20 @@ logging.basicConfig(filename='lats_game24.log', level=logging.INFO, format='%(as
 
 logging.info("Logging has been configured.")
 
+env = wikienv.WikiEnv()
+env = wrappers.HotPotQAWrapper(env, split="train")
+env = wrappers.LoggingWrapper(env)
+
 global reflection_map
 reflection_map = []
+
+def step(env, action):
+    attempts = 0
+    while attempts < 10:
+        try:
+            return env.step(action)
+        except requests.exceptions.Timeout:
+            attempts += 1
 
 def get_value(task, x, y, n_evaluate_sample, cache_value=True):
     global reflection_map
@@ -47,10 +59,11 @@ def get_samples(task, x, y, n_generate_sample, prompt_sample, stop):
     unique_trajectories = get_unique_trajectories(failed_trajectories)
     global reflection_map
     reflection_map = []
+
     if prompt_sample == 'standard':
         prompt = task.standard_prompt_wrap(x, y)
     elif prompt_sample == 'cot':
-        prompt, reflection_map = task.cot_prompt_wrap(x, y, unique_trajectories)
+        prompt = task.cot_prompt_wrap(x, y, reflection_map)
     else:
         raise ValueError(f'prompt_sample {prompt_sample} not recognized')
     logging.info(f"PROMPT: {prompt}")
@@ -160,7 +173,7 @@ def mcts_search(args, task, idx, iterations=50, to_print=True):
     root = Node(state=None, question=x)
     all_nodes = []
     failed_trajectories = []
-
+    tn_count = 0
     for i in range(iterations):
         logging.info(f"Iteration {i + 1}...")
         node = select_node(root)
@@ -175,14 +188,14 @@ def mcts_search(args, task, idx, iterations=50, to_print=True):
 
         if node.is_terminal and node.reward == 1:
             logging.info(f"Terminal node with reward 1 found at iteration {i + 1}")
-            return node.state, node.value, all_nodes, node.reward, node.em
+            return node.state, node.value, all_nodes, node.reward, node.em, tn_count
         
-        expand_node(node, args, task)
+        tn_count += expand_node(node, args, task)
 
         while node.is_terminal:
             logging.info(f"Depth limit node found at iteration {i + 1}, reselecting...")
             node = select_node(root)
-            expand_node(node, args, task)
+            tn_count += expand_node(node, args, task)
 
         value = evaluate_node(node, args, task)
         backpropagate(node, value)
@@ -193,7 +206,7 @@ def mcts_search(args, task, idx, iterations=50, to_print=True):
         if terminal_nodes_with_reward_1:
             logging.info(f"Terminal node with reward 1 found at iteration {i + 1}")
             best_node = max(terminal_nodes_with_reward_1, key=lambda x: x.value)
-            return best_node.state, best_node.value, all_nodes, best_node.reward, best_node.em
+            return best_node.state, best_node.value, all_nodes, best_node.reward, best_node.em, tn_count
     
         for j, (node, value) in enumerate(all_nodes):
             logging.info(f"Node {j+1}: {str(node)}")
@@ -206,7 +219,7 @@ def mcts_search(args, task, idx, iterations=50, to_print=True):
         logging.info("Successful trajectory found")
     else:
         logging.info("Unsuccessful trajectory found")
-    return best_child.state, best_child.value, all_nodes, best_child.reward, best_child.em
+    return best_child.state, best_child.value, all_nodes, best_child.reward, best_child.em, tn_count
 
 def select_node(node):
     while node and node.children:
@@ -241,14 +254,18 @@ def expand_node(node, args, task):
         logging.info("Depth limit reached")
         print("Depth limit reached")
         node.is_terminal = True
-        return
-    new_nodes = generate_new_states(node, args, task)
+        return 0
+    new_nodes, count = generate_new_states(node, args, task)
     node.children.extend(new_nodes)
+
+    return count
 
 def generate_new_states(node, args, task):
     prompt = generate_prompt(node)
     sampled_actions = get_samples(task, prompt, f"Thought {node.depth + 1}: ", args.n_generate_sample, prompt_sample=args.prompt_sample, stop="Observation")
     logging.info(f"SAMPLED ACTION: {sampled_actions}")
+
+    count = 0
     
     unique_states = {}  # Store unique states here
     for action in sampled_actions:
@@ -274,6 +291,11 @@ def generate_new_states(node, args, task):
             new_state['action'] = action_line
             new_state['observation'] = obs
 
+            if (action_line.lower().startswith("search[") and action_line.endswith("]")):
+                count += 1
+            elif (action_line.lower().startswith("finish[") and action_line.endswith("]")):
+                count += 1
+
             new_node = Node(state=new_state, question=node.question, parent=node)
             new_node.is_terminal = r == 1 or done
             new_node.reward = r
@@ -287,7 +309,7 @@ def generate_new_states(node, args, task):
                 trajectory = collect_trajectory(new_node)
                 failed_trajectories.append({'trajectory': trajectory, 'final_answer': f"{action_type.lower()}[{action_param}]"})
 
-    return list(unique_states.values())  # Return unique nodes as a list
+    return list(unique_states.values()), count # Return unique nodes as a list
 
 
 def evaluate_node(node, args, task):
