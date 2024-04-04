@@ -44,7 +44,10 @@ def run(args):
             print("tn_count:",tn_count)
 
         elif args.algorithm == 'rap':
-            state, value, all_nodes, reward, em = mcts_search(args, task, i, args.iterations, True)
+            state, value, all_nodes, reward, em, tn_count = mcts_search(args, task, i, args.iterations, True)
+            terminate_count.append(tn_count)
+            print("problem index:",i)
+            print("tn_count:",tn_count)
         else:
             raise Exception("Search algorithm option not valid")
          # log main metric
