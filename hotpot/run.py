@@ -7,6 +7,7 @@ from models import gpt_usage
 from lats import lats_search
 from tot import dfs_search
 from rap import mcts_search
+from cr import cr_search
 import logging
 
 
@@ -15,7 +16,9 @@ import numpy as np
 import re
 
 def run(args):
+    # print("start task")
     task = HotPotQATask()
+    # print('init end')
     print(task)
     logs, cnt_avg, cnt_any = [], 0, 0
 
@@ -48,6 +51,12 @@ def run(args):
             terminate_count.append(tn_count)
             print("problem index:",i)
             print("tn_count:",tn_count)
+        elif args.algorithm == 'cr':
+            state, value, all_nodes, reward, em, tn_count = cr_search(args, task, i, args.iterations, True)
+            terminate_count.append(tn_count)
+            print("problem index:",i)
+            print("tn_count:",tn_count)
+
         else:
             raise Exception("Search algorithm option not valid")
          # log main metric
